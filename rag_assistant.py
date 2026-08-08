@@ -2,7 +2,7 @@ import torch
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 from transformers import pipeline
-ιmport numpy as np
+import numpy as np
 
 
 # Load models (embedding and generation)
