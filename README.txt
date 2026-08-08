@@ -37,3 +37,29 @@ my-koinoxrista-app/
 ├── requirements.txt     # Python dependency list
 ├── .gitignore           # Git exclusion rules
 └── README.md            # Project documentation
+
+Installation & Setup
+Clone the repository:
+
+Bash
+git clone [https://github.com/nikos-sofikitis/my-koinoxrista-app.git](https://github.com/nikos-sofikitis/my-koinoxrista-app.git)
+cd my-koinoxrista-app
+Create and activate a virtual environment:
+
+
+
+PowerShell
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+
+
+Bash
+source venv/bin/activate
+Install dependencies:
+
+Bash
+pip install -r requirements.txt
+Run the application:
+
+Bash
+streamlit run KoinoxristaAPP.py
