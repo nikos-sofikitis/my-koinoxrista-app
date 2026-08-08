@@ -1,109 +1,163 @@
 import streamlit as st
-from fpdf import FPDF
+from pdf_generator import create_pdf
+from rag_assistant import ask_rag, load_models, prepare_knowledge
 
+# Page Configuration
+st.set_page_config(page_title="Building Management App", layout="wide")
 
-def create_pdf(period, reuma_input, nero_input):
-    # Μαθηματικοί υπολογισμοί βάσει του προτύπου[cite: 1, 2]
-    # Ρεύμα (Electricity) - Κατανομή βάσει ποσοστών[cite: 1, 2]
-    r_a1 = reuma_input * 0.2901
-    r_b1 = reuma_input * 0.2472
-    r_b2 = reuma_input * 0.4627
+# 1. LOAD MODELS & KNOWLEDGE (Cached)
+@st.cache_resource
+def get_models():
+    return load_models()
 
-    # Νερό (Water) - Το μοιράζουμε ισόποσα διά του 3 (ή βάσει αναγκών)
-    n_share = nero_input / 3
+embedding_model, pipe = get_models()
 
-    # Σταθερά ποσά ανά διαμέρισμα
-    # Καθαριότητα: 6.70 | Ασανσέρ: 10.33 για Α1, 11.50 για Β1/Β2
-    total_a1 = r_a1 + 6.70 + 10.33 + n_share
-    total_b1 = r_b1 + 6.70 + 11.50 + n_share
-    total_b2 = r_b2 + 6.70 + 11.50 + n_share
-    grand_total = reuma_input + 20.00 + 33.33 + nero_input
+building_knowledge = """
+Η πολυκατοικία δημιουργήθηκε από τον Σωτήρη Σοφικίτη.
+Ο Σωτήρης Σοφικίτης είναι ο ιδιοκτήτης της πολυκατοικίας όχι ένοικος.
+Ο Σωτήρης Σοφικίτης είναι ο διαχειριστής της πολυκατοικίας.
+Ο Σωτήρης Σοφικίτης είναι ο υπεύθυνος για την έκδοση των κοινοχρήστων.
+Ο Σωτήρης Σοφικίτης δεν ζει στην πολυκατοικία και δεν έχει διαμέρισμα στο οποίο μένει.
+Η πολυκατοικία κατασκευάστηκε το 2024.
+Η πολυκατοικια βρίσκεται στην οδό Φιλικών 35, Περιστέρι.
+Η πολυκατοικία αποτελείται από τρία διαμερίσματα.
+Το διαμέρισμα A1 ανήκει στην Τζίνα.
+Το διαμέρισμα B1 ανήκει στη Χαρά.
+Το διαμέρισμα B2 ανήκει στον Πολίτη.
 
-    pdf = FPDF()
-    pdf.add_page()
+Η ηλεκτρική ενέργεια κατανέμεται με βάση τα προκαθορισμένα ποσοστά συμμετοχής.
+Η Τζίνα συμμετέχει στην ηλεκτρική ενέργεια με ποσοστό 29.01%.
+Η Χαρά συμμετέχει στην ηλεκτρική ενέργεια με ποσοστό 24.72%.
+Ο Πολίτης συμμετέχει στην ηλεκτρική ενέργεια με ποσοστό 46.27%.
 
-    # Τίτλος
-    pdf.set_font("Helvetica", 'B', 16)
-    pdf.set_text_color(0, 51, 102)  # Σκούρο Μπλε
-    pdf.cell(190, 10, txt="KOINOXRISTA FILIKON", ln=True, align='C')
-    pdf.set_font("Helvetica", '', 11)
-    pdf.cell(190, 10, txt=f"PERIOD: {period}", ln=True, align='C')
-    pdf.ln(5)
+Η καθαριότητα είναι σταθερή στα 6.70 ευρώ για κάθε διαμέρισμα.
+Η Τζίνα πληρώνει 6.70 ευρώ για καθαριότητα.
+Η Χαρά πληρώνει 6.70 ευρώ για καθαριότητα.
+Ο Πολίτης πληρώνει 6.70 ευρώ για καθαριότητα.
 
-    # Στήλες: Description | Total | A1 | B1 | B2[cite: 2]
-    col_widths = [45, 30, 38, 38, 38]
-    h = 10
+Η συντήρηση του ανελκυστήρα επιβαρύνει διαφορετικά τα διαμερίσματα.
+Η Τζίνα πληρώνει 10.33 ευρώ για τη συντήρηση του ανελκυστήρα.
+Η Χαρά πληρώνει 11.50 ευρώ για τη συντήρηση του ανελκυστήρα.
+Ο Πολίτης πληρώνει 11.50 ευρώ για τη συντήρηση του ανελκυστήρα.
 
-    # Κεφαλίδα με Μπλε Χρώμα[cite: 2]
-    pdf.set_font("Helvetica", 'B', 9)
-    pdf.set_fill_color(0, 102, 204)  # Μπλε
-    pdf.set_text_color(255, 255, 255)  # Λευκά γράμματα
-    pdf.cell(col_widths[0], h, "Description", 1, 0, 'C', True)
-    pdf.cell(col_widths[1], h, "Total (Euro)", 1, 0, 'C', True)
-    pdf.cell(col_widths[2], h, "Apartment A1", 1, 0, 'C', True)
-    pdf.cell(col_widths[3], h, "Apartment B1", 1, 0, 'C', True)
-    pdf.cell(col_widths[4], h, "Apartment B2", 1, 1, 'C', True)
+Το κόστος του νερού επιμερίζεται ισόποσα στα τρία διαμερίσματα.
+Κάθε διαμέρισμα συμμετέχει κατά ένα τρίτο στο συνολικό κόστος του νερού.
+Ο λογαριασμός νερού υπολογίζεται μόνο όταν υπάρχει διαθέσιμος λογαριασμός νερού.
+Ο λογαριασμός νερού δεν θεωρείται υποχρεωτικά μηνιαία δαπάνη.
 
-    # Επαναφορά χρωμάτων για το περιεχόμενο
-    pdf.set_text_color(0, 0, 0)
-    pdf.set_font("Helvetica", '', 10)
+Οι επισκευές της πολυκατοικίας επιμερίζονται με βάση τα χιλιοστά συμμετοχής κάθε διαμερίσματος.
+Οι κοινόχρηστες δαπάνες πρέπει να καταγράφονται και να διαχωρίζονται ανά κατηγορία.
+Οι κοινόχρηστες δαπάνες που αφορούν αποκλειστικά ένα διαμέρισμα δεν επιβαρύνουν τα άλλα διαμερίσματα.
+Τα κοινόχρηστα δεν αποτελούν έξοδο της εταιρείας επειδή οι σχετικές δαπάνες πληρώνονται από τους ενοίκους.
+Τα κοινόχρηστα είναι ανεξάρτητα από το ποσό του ενοικίου.
 
-    # Γραμμή Electricity[cite: 2]
-    pdf.cell(col_widths[0], h, "Electricity", 1)
-    pdf.cell(col_widths[1], h, f"{reuma_input:.2f}", 1, 0, 'R')
-    pdf.cell(col_widths[2], h, f"{r_a1:.2f}", 1, 0, 'R')
-    pdf.cell(col_widths[3], h, f"{r_b1:.2f}", 1, 0, 'R')
-    pdf.cell(col_widths[4], h, f"{r_b2:.2f}", 1, 1, 'R')
+Τα κοινόχρηστα πρέπει να υπολογίζονται αμέσως μόλις εκδοθεί ο λογαριασμός ηλεκτρικής ενέργειας της ΗΡΩΝ.
+Η ημερομηνία του λογαριασμού ΗΡΩΝ πρέπει να καταγράφεται στα κοινόχρηστα.
+Η περίοδος κατανάλωσης του λογαριασμού ΗΡΩΝ πρέπει να καταγράφεται στα κοινόχρηστα.
+Το ποσό του λογαριασμού ΗΡΩΝ κατανέμεται στα τρία διαμερίσματα με τα προκαθορισμένα ποσοστά.
+Όταν υπάρχει λογαριασμός νερού, το ποσό του νερού προστίθεται στα κοινόχρηστα.
+Όταν δεν υπάρχει λογαριασμός νερού, δεν προστίθεται χρέωση νερού.
+Μετά τον υπολογισμό των κοινοχρήστων πρέπει να δημιουργείται αναλυτικό ενημερωτικό.
+Τα κοινόχρηστα πρέπει να εξοφλούνται μέχρι τις 20 κάθε μήνα.
 
-    # Γραμμή Cleaning[cite: 2]
-    pdf.cell(col_widths[0], h, "Cleaning", 1)
-    pdf.cell(col_widths[1], h, "20.00", 1, 0, 'R')
-    pdf.cell(col_widths[2], h, "6.70", 1, 0, 'R')
-    pdf.cell(col_widths[3], h, "6.70", 1, 0, 'R')
-    pdf.cell(col_widths[4], h, "6.70", 1, 1, 'R')
+Το μηνιαίο ενοίκιο της Τζίνας είναι 750 ευρώ.
+Το μηνιαίο ενοίκιο της Χαράς είναι 600 ευρώ.
+Το μηνιαίο ενοίκιο του Πολίτη είναι 1100 ευρώ.
+Το ενοίκιο δεν χρησιμοποιείται για τον υπολογισμό των κοινοχρήστων.
 
-    # Γραμμή Elevator[cite: 2]
-    pdf.cell(col_widths[0], h, "Elevator Maint.", 1)
-    pdf.cell(col_widths[1], h, "33.33", 1, 0, 'R')
-    pdf.cell(col_widths[2], h, "10.33", 1, 0, 'R')
-    pdf.cell(col_widths[3], h, "11.50", 1, 0, 'R')
-    pdf.cell(col_widths[4], h, "11.50", 1, 1, 'R')
+Η πολυκατοικία έχει τρία διαμερίσματα με διαφορετικά μεγέθη.
+Το διαμέρισμα του Πολίτη είναι 93 τετραγωνικά μέτρα.
+Το διαμέρισμα της Τζίνας είναι 63 τετραγωνικά μέτρα.
+Το διαμέρισμα της Χαράς είναι 45 τετραγωνικά μέτρα.
 
-    # Γραμμή Water (ΝΕΟ)[cite: 2]
-    pdf.cell(col_widths[0], h, "Water", 1)
-    pdf.cell(col_widths[1], h, f"{nero_input:.2f}", 1, 0, 'R')
-    pdf.cell(col_widths[2], h, f"{n_share:.2f}", 1, 0, 'R')
-    pdf.cell(col_widths[3], h, f"{n_share:.2f}", 1, 0, 'R')
-    pdf.cell(col_widths[4], h, f"{n_share:.2f}", 1, 1, 'R')
+Η Τζίνα κατοικεί στον πρώτο όροφο.
+Η Χαρά κατοικεί στον δεύτερο όροφο.
+Ο Πολίτης κατοικεί στον δεύτερο όροφο.
+Η Τζίνα έχει ελαφρυντικό στη χρέωση του ανελκυστήρα επειδή το διαμέρισμά της βρίσκεται στον πρώτο όροφο.
 
-    # Γραμμή Σύνολο (Grand Total) με απαλό μπλε[cite: 2]
-    pdf.set_font("Helvetica", 'B', 10)
-    pdf.set_fill_color(204, 229, 255)
-    pdf.cell(col_widths[0], h, "GRAND TOTAL", 1, 0, 'L', True)
-    pdf.cell(col_widths[1], h, f"{grand_total:.2f}", 1, 0, 'R', True)
-    pdf.cell(col_widths[2], h, f"{total_a1:.2f}", 1, 0, 'R', True)
-    pdf.cell(col_widths[3], h, f"{total_b1:.2f}", 1, 0, 'R', True)
-    pdf.cell(col_widths[4], h, f"{total_b2:.2f}", 1, 1, 'R', True)
+Τα κοινόχρηστα πρέπει να υπολογίζονται με τον ίδιο τρόπο κάθε μήνα.
+Τα ποσοστά συμμετοχής δεν πρέπει να αλλάζουν αυθαίρετα από μήνα σε μήνα.
+Σε περίπτωση αμφιβολίας για μια δαπάνη πρέπει να ελέγχεται ο κανονισμός της πολυκατοικίας.
 
-    return pdf.output()
+Ο Πολίτης καθυστερεί συνήθως να πληρώσει τα κοινόχρηστα.
+Ο Πολίτης επιθυμεί να παρκάρει στο υπόγειο της πολυκατοικίας, αλλά αυτό δεν είναι υλοποιήσιμο.
+Η απαίτηση του Πολίτη να παρκάρει στο υπόγειο δημιουργεί προβλήματα και εντάσεις.
 
+Οι ένοικοι και ιδιοκτήτες των διαμερισμάτων της πολυκατοικίας είναι η Τζίνα, η Χαρά και ο Πολίτης.
+Στην πολυκατοικία διαμένουν τρία πρόσωπα: η Τζίνα, η Χαρά και ο Πολίτης.
+Ο ένοικος του διαμερίσματος A1 είναι η Τζίνα.
+Ο ένοικος του διαμερίσματος B1 είναι η Χαρά.
+Ο ένοικος του διαμερίσματος B2 είναι ο Πολίτης.
+"""
 
-# --- STREAMLIT UI ---
-st.title("🏢 Building Fees Generator")
+@st.cache_data
+def get_knowledge():
+    return prepare_knowledge(building_knowledge, embedding_model)
 
-with st.form("data_form"):
-    period = st.text_input("Period", "16/02/26 - 15/03/26")
-    reuma = st.number_input("Electricity Total (€)", min_value=0.0, format="%.2f")
-    nero = st.number_input("Water Total (€)", min_value=0.0, format="%.2f")
-    submit_button = st.form_submit_button("Calculate")
+knowledge_sentences, knowledge_embeddings = get_knowledge()
 
-if submit_button:
-    st.info("Review the totals and download the blue-themed PDF below.")
-    pdf_bytes = create_pdf(period, reuma, nero)
+# 2. SESSION STATE FOR CHAT
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = [
+        {
+            "role": "system", 
+            "content": (
+                "Είσαι ένας χρήσιμος βοηθός διαχείρισης κτηρίου. "
+                "Απάντησε στην ερώτηση του χρήστη αποκλειστικά και μόνο με βάση τις πληροφορίες που σου δίνονται, στα Ελληνικά."
+            )
+        }
+    ]
 
-    st.download_button(
-        label="📥 Download Blue PDF Report",
-        data=bytes(pdf_bytes),
-        file_name=f"koinoxrista_{period}.pdf",
-        mime="application/pdf"
-    )
+# --- UI LAYOUT ---
+st.title("🏢 Διαχείριση Κοινοχρήστων & RAG Assistant")
+
+col1, col2 = st.columns([1, 1])
+
+# ΑΡΙΣΤΕΡΗ ΣΤΗΛΗ: Υπολογισμός & Έκδοση PDF
+with col1:
+    st.header("📄 Έκδοση Κοινοχρήστων")
+    with st.form("data_form"):
+        period = st.text_input("Περίοδος", "16/02/26 - 15/03/26")
+        reuma = st.number_input("Σύνολο Ρεύματος (€)", min_value=0.0, format="%.2f")
+        nero = st.number_input("Σύνολο Νερού (€)", min_value=0.0, format="%.2f")
+        episkeves = st.number_input("Σύνολο Επισκευών (€)", min_value=0.0, format="%.2f")
+        submit_button = st.form_submit_button("Υπολογισμός")
+
+    if submit_button:
+        st.success("Το PDF δημιουργήθηκε επιτυχώς!")
+        pdf_bytes = create_pdf(period, reuma, nero, episkeves)
+
+        st.download_button(
+            label="📥 Λήψη PDF",
+            data=bytes(pdf_bytes),
+            file_name=f"koinoxrista_{period}.pdf",
+            mime="application/pdf"
+        )
+
+# ΔΕΞΙΑ ΣΤΗΛΗ: RAG Chatbot
+with col2:
+    st.header("🤖 Βοηθός RAG")
+    
+    # Προβολή Ιστορικού (αγνοώντας το system message)
+    for msg in st.session_state.chat_history:
+        if msg["role"] == "system":
+            continue
+        with st.chat_message(msg["role"]):
+            st.write(msg["content"])
+
+    # Chat Input
+    if user_input := st.chat_input("Ρωτήστε για τους κανόνες κοινοχρήστων..."):
+        with st.chat_message("user"):
+            st.write(user_input)
+        
+        with st.chat_message("assistant"):
+            with st.spinner("Ανάλυση..."):
+                response = ask_rag(
+                    user_query=user_input,
+                    history=st.session_state.chat_history,
+                    embedding_model=embedding_model,
+                    pipe=pipe,
+                    knowledge_sentences=knowledge_sentences,
+                    knowledge_embeddings=knowledge_embeddings
+                )
+                st.write(response)
