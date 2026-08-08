@@ -33,7 +33,10 @@ def ask_rag(user_query, history, embedding_model, pipe, knowledge_sentences, kno
     # A. Retrieval
     query_embedding = embedding_model.encode([user_query])
     similarities = cosine_similarity(query_embedding, knowledge_embeddings).flatten()
-    top_indices = similarities.argsort()[-2:][::-1]
+    top_k = 4
+    top_indices = np.argsort(similarities)[-top_k:][::-1]
+    context = "\n".join([knowledge_chunks[i] for i in top_indices])
+    
     
     retrieved_sentences = [knowledge_sentences[i] for i in top_indices]
     context = "\n".join([f"- {s}" for s in retrieved_sentences])
