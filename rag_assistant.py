@@ -129,16 +129,35 @@ def ask_rag(user_query, history, pipe, max_history_turns=3):
     retrieved_sentences = [knowledge_sentences[i] for i in top_indices]
     context = "\n".join([f"- {s}" for s in retrieved_sentences])
 
-    # B. Sliding Window στο καθαρό ιστορικό
+    # B. Προετοιμασία active_messages με Sliding Window
+    # Διατηρούμε το system message (αν υπάρχει) και τα τελευταία N μηνύματα
     window_size = max_history_turns * 2
-    if len(history) > window_size + 1:
-        active_messages = [history[0]] + history[-window_size:]
+    
+    if history and history[0].get("role") == "system":
+        system_msg = history[0]
+        past_turns = history[1:]
     else:
-        active_messages = [msg.copy() for msg in history]
+        system_msg = {
+            "role": "system", 
+            "content": "Είσαι ένας χρήσιμος βοηθός διαχείρισης κτηρίου. Απάντησε στην ερώτηση αποκλειστικά στα Ελληνικά με βάση τις πληροφορίες που σου δίνονται."
+        }
+        past_turns = history
 
-    # C. Προσθήκη Context & Οδηγίας Γλώσσας
-    instruction = "Απάντησε στην ερώτηση του χρήστη αποκλειστικά στα Ελληνικά, χρησιμοποιώντας μόνο τις παρακάτω πληροφορίες."
-    formatted_user_prompt = f"{instruction}\n\nΠληροφορίες:\n{context}\n\nΕρώτηση: {user_query}"
+    # Κρατάμε τα πιο πρόσφατα μηνύματα
+    recent_history = past_turns[-window_size:] if len(past_turns) > window_size else past_turns
+    
+    # Δημιουργούμε τη νέα λίστα μηνυμάτων για το prompt
+    active_messages = [system_msg] + [msg.copy() for msg in recent_history]
+
+    # C. Προσθήκη του τρέχοντος User Query με το Context ΣΤΟ ΤΕΛΟΣ
+    formatted_user_prompt = (
+        f"Απάντησε στα Ελληνικά χρησιμοποιώντας τις παρακάτω πληροφορίες.\n\n"
+        f"Πληροφορίες:\n{context}\n\n"
+        f"Ερώτηση: {user_query}"
+    )
+    
+    # Υποχρεωτικά το τελευταίο element πρέπει να είναι role: user
+    active_messages.append({"role": "user", "content": formatted_user_prompt})
 
     # D. Generation
     output = pipe(
@@ -156,7 +175,7 @@ def ask_rag(user_query, history, pipe, max_history_turns=3):
     else:
         response_text = raw_response.strip()
 
-    # F. Ενημέρωση Ιστορικού
+    # F. Ενημέρωση του καθαρού ιστορικού (χωρίς τα context prompts)
     history.append({"role": "user", "content": user_query})
     history.append({"role": "assistant", "content": response_text})
     
