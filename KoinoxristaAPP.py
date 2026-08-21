@@ -37,16 +37,25 @@ with col1:
         reuma = st.number_input("Σύνολο Ρεύματος (€)", min_value=0.0, format="%.2f")
         nero = st.number_input("Σύνολο Νερού (€)", min_value=0.0, format="%.2f")
         episkeves = st.number_input("Σύνολο Επισκευών (€)", min_value=0.0, format="%.2f")
+        
+        # Νέο πεδίο για την περιγραφή της βλάβης/επισκευής
+        repair_name = st.text_input(
+            "Περιγραφή Επισκευής (στα Λατινικά/Αγγλικά)", 
+            value="General",
+            help="π.χ. Plumbing, Roof Fix, Door Lock"
+        )
+        
         submit_button = st.form_submit_button("Υπολογισμός")
 
     if submit_button:
+        # Κλήση της create_pdf με την προσθήκη του repair_name
+        pdf_bytes = create_pdf(period, reuma, nero, episkeves, repair_name)
         st.success("Το PDF δημιουργήθηκε επιτυχώς!")
-        pdf_bytes = create_pdf(period, reuma, nero, episkeves)
 
         st.download_button(
             label="📥 Λήψη PDF",
             data=bytes(pdf_bytes),
-            file_name=f"koinoxrista_{period}.pdf",
+            file_name=f"koinoxrista_{period.replace('/', '-')}.pdf",
             mime="application/pdf"
         )
 

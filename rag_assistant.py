@@ -153,7 +153,7 @@ def ask_rag(user_query, history, pipe, max_history_turns=3):
     # Δημιουργούμε τη νέα λίστα μηνυμάτων για το prompt
     active_messages = [system_msg] + [msg.copy() for msg in recent_history]
 
-    # C. Προσθήκη του τρέχοντος User Query με το Context ΣΤΟ ΤΕΛΟΣ
+    # C. Addition of the current User Query with the Context at the end
     formatted_user_prompt = (
         f"Απάντησε στα Ελληνικά χρησιμοποιώντας τις παρακάτω πληροφορίες.\n\n"
         f"Πληροφορίες:\n{context}\n\n"
@@ -161,7 +161,7 @@ def ask_rag(user_query, history, pipe, max_history_turns=3):
     )
     
     # Υποχρεωτικά το τελευταίο element πρέπει να είναι role: user
-    active_messages.append({"role": "user", "content": formatted_user_prompt})
+    active_messages.append({"role": "user", "content": formatted_user_prompt}) #Τελικη Λιστα με ενα System message και τα τελευταία μηνύματα του χρήστη και του βοηθού, με το τελευταίο να είναι η τρέχουσα ερώτηση του χρήστη.
 
     # D. Generation
     output = pipe(
