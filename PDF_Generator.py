@@ -21,9 +21,9 @@ def create_pdf(period, reuma_input, nero_input, episkeves_input=0.0, repair_name
     # Τίτλος
     pdf.set_font("Helvetica", "B", 16)
     pdf.set_text_color(0, 51, 102)
-    pdf.cell(190, 10, text="KOINOXRISTA FILIKON", new_x="LMARGIN", new_y="NEXT", align="C")
+    pdf.cell(190, 10, txt="KOINOXRISTA FILIKON", ln=True, align="C")
     pdf.set_font("Helvetica", "", 11)
-    pdf.cell(190, 10, text=f"PERIOD: {period}", new_x="LMARGIN", new_y="NEXT", align="C")
+    pdf.cell(190, 10, txt=f"PERIOD: {period}", ln=True, align="C")
     pdf.ln(5)
 
     col_widths = [45, 30, 38, 38, 38]
@@ -70,9 +70,9 @@ def create_pdf(period, reuma_input, nero_input, episkeves_input=0.0, repair_name
     pdf.cell(col_widths[3], h, f"{n_share:.2f}", 1, 0, "R")
     pdf.cell(col_widths[4], h, f"{n_share:.2f}", 1, 1, "R")
 
-    # Dynamic Repairs Name (π.χ. "Repairs (Plumbing)")
+    # Dynamic Repairs Name
     repair_label = f"Repairs ({repair_name})" if repair_name and repair_name != "Repairs" else "Repairs"
-    pdf.cell(col_widths[0], h, repair_label[:22], 1)  # [:22] για να μην ξεπεράσει το πλάτος του κουτιού
+    pdf.cell(col_widths[0], h, repair_label[:22], 1)
     pdf.cell(col_widths[1], h, f"{episkeves_input:.2f}", 1, 0, "R")
     pdf.cell(col_widths[2], h, f"{e_share:.2f}", 1, 0, "R")
     pdf.cell(col_widths[3], h, f"{e_share:.2f}", 1, 0, "R")
@@ -87,4 +87,4 @@ def create_pdf(period, reuma_input, nero_input, episkeves_input=0.0, repair_name
     pdf.cell(col_widths[3], h, f"{total_b1:.2f}", 1, 0, "R", True)
     pdf.cell(col_widths[4], h, f"{total_b2:.2f}", 1, 1, "R", True)
 
-    return bytes(pdf.output())
+    return pdf.output(dest='S').encode('latin1')
