@@ -1,3 +1,10 @@
 streamlit
-fpdf2
+fpdf
 pandas
+import torch
+sentence_transformers 
+sklearn.metrics.pairwise 
+transformers 
+numpy 
+torch 
+
