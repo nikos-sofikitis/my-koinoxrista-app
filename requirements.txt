@@ -1,9 +1,9 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
 streamlit
-fpdf
+fpdf2
 pandas
-sentence_transformers 
-sklearn.metrics.pairwise 
-transformers 
-numpy 
-torch 
-
+scikit-learn
+sentence-transformers
+transformers
+numpy
