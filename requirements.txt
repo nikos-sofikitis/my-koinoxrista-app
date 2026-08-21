@@ -1,7 +1,6 @@
 streamlit
 fpdf
 pandas
-import torch
 sentence_transformers 
 sklearn.metrics.pairwise 
 transformers 
