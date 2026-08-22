@@ -1,85 +1,113 @@
-import streamlit as st
-from pdf_generator import create_pdf
-from rag_assistant import ask_rag, load_models
+import os
+from dotenv import load_dotenv
 
-# Page Configuration
-st.set_page_config(page_title="Building Management App", layout="wide")
+# --- LANGCHAIN IMPORTS ---
+from langchain_community.document_loaders import PyPDFDirectoryLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import FAISS
+from langchain_huggingface import HuggingFaceEmbeddings, HuggingFaceEndpoint
 
-# 1. LOAD MODELS (Cached)
-@st.cache_resource
-def get_models():
-    return load_models()
+# Φόρτωση API Key από το .env αρχείο
+load_dotenv()
 
-embedding_model, pipe = get_models()
+# --- GLOBAL METABΛΗΤΕΣ ---
+vectorstore = None
+llm_chain = None
 
-# 2. SESSION STATE FOR CHAT
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = [
-        {
-            "role": "system", 
-            "content": (
-                "Είσαι ένας χρήσιμος βοηθός διαχείρισης κτηρίου. "
-                "Απάντησε στην ερώτηση του χρήστη αποκλειστικά και μόνο με βάση τις πληροφορίες που σου δίνονται, στα Ελληνικά."
-            )
-        }
-    ]
+DOCS_DIR = "docs"
 
-# --- UI LAYOUT ---
-st.title("🏢 Διαχείριση Κοινοχρήστων & RAG Assistant")
 
-col1, col2 = st.columns([1, 1])
+def build_or_load_vectorstore():
+    """Διαβάζει τα PDFs από τον φάκελο docs/ και φτιάχνει τη Vector Database (FAISS)."""
+    if not os.path.exists(DOCS_DIR):
+        os.makedirs(DOCS_DIR)
 
-# ΑΡΙΣΤΕΡΗ ΣΤΗΛΗ: Υπολογισμός & Έκδοση PDF
-with col1:
-    st.header("📄 Έκδοση Κοινοχρήστων")
-    with st.form("data_form"):
-        period = st.text_input("Περίοδος", "16/02/26 - 15/03/26")
-        reuma = st.number_input("Σύνολο Ρεύματος (€)", min_value=0.0, format="%.2f")
-        nero = st.number_input("Σύνολο Νερού (€)", min_value=0.0, format="%.2f")
-        episkeves = st.number_input("Σύνολο Επισκευών (€)", min_value=0.0, format="%.2f")
-        
-        # Νέο πεδίο για την περιγραφή της βλάβης/επισκευής
-        repair_name = st.text_input(
-            "Περιγραφή Επισκευής (στα Λατινικά/Αγγλικά)", 
-            value="General",
-            help="π.χ. Plumbing, Roof Fix, Door Lock"
-        )
-        
-        submit_button = st.form_submit_button("Υπολογισμός")
+    # 1. Loading PDFs
+    loader = PyPDFDirectoryLoader(DOCS_DIR)
+    raw_documents = loader.load()
 
-    if submit_button:
-        # Κλήση της create_pdf με την προσθήκη του repair_name
-        pdf_bytes = create_pdf(period, reuma, nero, episkeves, repair_name)
-        st.success("Το PDF δημιουργήθηκε επιτυχώς!")
+    if not raw_documents:
+        print(f"⚠️ Προειδοποίηση: Ο φάκελος '{DOCS_DIR}' είναι άδειος.")
+        return None
 
-        st.download_button(
-            label="📥 Λήψη PDF",
-            data=bytes(pdf_bytes),
-            file_name=f"koinoxrista_{period.replace('/', '-')}.pdf",
-            mime="application/pdf"
-        )
+    # 2. Chunking (Τεμαχισμός)
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=500,
+        chunk_overlap=50,
+        separators=["\n\n", "\n", " ", ""]
+    )
+    docs = text_splitter.split_documents(raw_documents)
 
-# ΔΕΞΙΑ ΣΤΗΛΗ: RAG Chatbot
-with col2:
-    st.header("🤖 Βοηθός RAG")
+    # 3. Fast Local Embeddings (Sentence Transformers)
+    embeddings = HuggingFaceEmbeddings(
+        model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    )
+
+    # 4. Vector Store creation
+    return FAISS.from_documents(docs, embeddings)
+
+
+def load_models():
+    """Αρχικοποίηση του Vector Store και σύνδεση με το Hugging Face API."""
+    global vectorstore, llm_chain
+
+    # Α. Φόρτωση Vector Store
+    vectorstore = build_or_load_vectorstore()
+
+    # Β. Σύνδεση με το Open-Source LLM μέσω Serverless API
+    # Χρησιμοποιούμε το Qwen/Qwen2.5-72B-Instruct που είναι κορυφαίο στα Ελληνικά
+    hf_api_token = os.getenv("HUGGINGFACEHUB_API_TOKEN")
     
-    # Προβολή Ιστορικού (αγνοώντας το system message)
-    for msg in st.session_state.chat_history:
-        if msg["role"] == "system":
-            continue
-        with st.chat_message(msg["role"]):
-            st.write(msg["content"])
+    llm = HuggingFaceEndpoint(
+        repo_id="Qwen/Qwen2.5-72B-Instruct",
+        task="text-generation",
+        max_new_tokens=256,
+        temperature=0.1,
+        huggingfacehub_api_token=hf_api_token
+    )
 
-    # Chat Input
-    if user_input := st.chat_input("Ρωτήστε για τους κανόνες κοινοχρήστων..."):
-        with st.chat_message("user"):
-            st.write(user_input)
-        
-        with st.chat_message("assistant"):
-            with st.spinner("Ανάλυση..."):
-                response = ask_rag(
-                    user_query=user_input,
-                    history=st.session_state.chat_history,
-                    pipe=pipe
-                )
-                st.write(response)
+    return vectorstore, llm
+
+
+def ask_rag(user_query, history, llm, max_history_turns=3):
+    """Production RAG Function με LangChain Similarity Search & Cloud API Inference."""
+    global vectorstore
+
+    context = ""
+    # A. Retrieval από τα PDFs
+    if vectorstore is not None:
+        retrieved_docs = vectorstore.similarity_search(user_query, k=4)
+        context = "\n".join([f"- {doc.page_content}" for doc in retrieved_docs])
+
+    # B. History Management (Sliding Window)
+    window_size = max_history_turns * 2
+    recent_history = history[-window_size:] if history else []
+    
+    history_str = ""
+    for msg in recent_history:
+        role = "Χρήστης" if msg["role"] == "user" else "Βοηθός"
+        history_str += f"{role}: {msg['content']}\n"
+
+    # C. System Prompt Construction
+    prompt = (
+        "<|im_start|>system\n"
+        "Είσαι ένας εξειδικευμένος βοηθός διαχείρισης κτηρίου. "
+        "Απάντησε στην ερώτηση του χρήστη αποκλειστικά στα Ελληνικά, χρησιμοποιώντας τις πληροφορίες από τα έγγραφα.\n\n"
+        f"--- ΠΛΗΡΟΦΟΡΙΕΣ ΑΠΟ PDFs ---\n{context if context else 'Δεν υπάρχουν διαθέσιμα έγγραφα.'}\n---------------------------\n"
+        f"<|im_end|>\n"
+        f"{history_str}"
+        f"<|im_start|>user\n{user_query}<|im_end|>\n"
+        f"<|im_start|>assistant\n"
+    )
+
+    # D. API Call (Εκτελείται στο Cloud, όχι τοπικά!)
+    try:
+        response_text = llm.invoke(prompt).strip()
+    except Exception as e:
+        response_text = f"Σφάλμα κατά την κλήση του API: {str(e)}"
+
+    # E. Ενημέρωση History
+    history.append({"role": "user", "content": user_query})
+    history.append({"role": "assistant", "content": response_text})
+
+    return response_text

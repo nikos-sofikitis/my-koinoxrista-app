@@ -7,3 +7,9 @@ scikit-learn
 sentence-transformers
 transformers
 numpy
+python-dotenv
+pypdf
+langchain-community
+langchain-text-splitters
+langchain-huggingface
+faiss-cpu

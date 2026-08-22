@@ -1,140 +1,85 @@
+import os
 import torch
 from sentence_transformers import SentenceTransformer
-from sklearn.metrics.pairwise import cosine_similarity
 from transformers import pipeline
-import numpy as np
 
-# --- 1.KNOWLEDGE BASE ---
-building_knowledge = """
-Η πολυκατοικία δημιουργήθηκε από τον Σωτήρη Σοφικίτη.
-Ο Σωτήρης Σοφικίτης είναι ο ιδιοκτήτης της πολυκατοικίας όχι ένοικος.
-Ο Σωτήρης Σοφικίτης είναι ο διαχειριστής της πολυκατοικίας.
-Ο Σωτήρης Σοφικίτης είναι ο υπεύθυνος για την έκδοση των κοινοχρήστων.
-Ο Σωτήρης Σοφικίτης δεν ζει στην πολυκατοικία και δεν έχει διαμέρισμα στο οποίο μένει.
-Η πολυκατοικία κατασκευάστηκε το 2024.
-Η πολυκατοικια βρίσκεται στην οδό Φιλικών 35, Περιστέρι.
-Η πολυκατοικία αποτελείται από τρία διαμερίσματα.
-Το διαμέρισμα A1 ανήκει στην Τζίνα.
-Το διαμέρισμα B1 ανήκει στη Χαρά.
-Το διαμέρισμα B2 ανήκει στον Πολίτη.
+# --- LANGCHAIN IMPORTS ---
+from langchain_community.document_loaders import PyPDFDirectoryLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import FAISS
+from langchain_huggingface import HuggingFaceEmbeddings
 
-Η ηλεκτρική ενέργεια κατανέμεται με βάση τα προκαθορισμένα ποσοστά συμμετοχής.
-Η Τζίνα συμμετέχει στην ηλεκτρική ενέργεια με ποσοστό 29.01%.
-Η Χαρά συμμετέχει στην ηλεκτρική ενέργεια με ποσοστό 24.72%.
-Ο Πολίτης συμμετέχει στην ηλεκτρική ενέργεια με ποσοστό 46.27%.
+# --- GLOBAL METABΛΗΤΕΣ ---
+vectorstore = None
+pipe = None
 
-Η καθαριότητα είναι σταθερή στα 6.70 ευρώ για κάθε διαμέρισμα.
-Η Τζίνα πληρώνει 6.70 ευρώ για καθαριότητα.
-Η Χαρά πληρώνει 6.70 ευρώ για καθαριότητα.
-Ο Πολίτης πληρώνει 6.70 ευρώ για καθαριότητα.
-
-Η συντήρηση του ανελκυστήρα επιβαρύνει διαφορετικά τα διαμερίσματα.
-Η Τζίνα πληρώνει 10.33 ευρώ για τη συντήρηση του ανελκυστήρα.
-Η Χαρά πληρώνει 11.50 ευρώ για τη συντήρηση του ανελκυστήρα.
-Ο Πολίτης πληρώνει 11.50 ευρώ για τη συντήρηση του ανελκυστήρα.
-
-Το κόστος του νερού επιμερίζεται ισόποσα στα τρία διαμερίσματα.
-Κάθε διαμέρισμα συμμετέχει κατά ένα τρίτο στο συνολικό κόστος του νερού.
-Ο λογαριασμός νερού υπολογίζεται μόνο όταν υπάρχει διαθέσιμος λογαριασμός νερού.
-Ο λογαριασμός νερού δεν θεωρείται υποχρεωτικά μηνιαία δαπάνη.
-
-Οι επισκευές της πολυκατοικίας επιμερίζονται με βάση τα χιλιοστά συμμετοχής κάθε διαμερίσματος.
-Οι κοινόχρηστες δαπάνες πρέπει να καταγράφονται και να διαχωρίζονται ανά κατηγορία.
-Οι κοινόχρηστες δαπάνες που αφορούν αποκλειστικά ένα διαμέρισμα δεν επιβαρύνουν τα άλλα διαμερίσματα.
-Τα κοινόχρηστα δεν αποτελούν έξοδο της εταιρείας επειδή οι σχετικές δαπάνες πληρώνονται από τους ενοίκους.
-Τα κοινόχρηστα είναι ανεξάρτητα από το ποσό του ενοικίου.
-
-Τα κοινόχρηστα πρέπει να υπολογίζονται αμέσως μόλις εκδοθεί ο λογαριασμός ηλεκτρικής ενέργειας της ΗΡΩΝ.
-Η ημερομηνία του λογαριασμού ΗΡΩΝ πρέπει να καταγράφεται στα κοινόχρηστα.
-Η περίοδος κατανάλωσης του λογαριασμού ΗΡΩΝ πρέπει να καταγράφεται στα κοινόχρηστα.
-Το ποσό του λογαριασμού ΗΡΩΝ κατανέμεται στα τρία διαμερίσματα με τα προκαθορισμένα ποσοστά.
-Όταν υπάρχει λογαριασμός νερού, το ποσό του νερού προστίθεται στα κοινόχρηστα.
-Όταν δεν υπάρχει λογαριασμός νερού, δεν προστίθεται χρέωση νερού.
-Μετά τον υπολογισμό των κοινοχρήστων πρέπει να δημιουργείται αναλυτικό ενημερωτικό.
-Τα κοινόχρηστα πρέπει να εξοφλούνται μέχρι τις 20 κάθε μήνα.
-
-Το μηνιαίο ενοίκιο της Τζίνας είναι 750 ευρώ.
-Το μηνιαίο ενοίκιο της Χαράς είναι 600 ευρώ.
-Το μηνιαίο ενοίκιο του Πολίτη είναι 1100 ευρώ.
-Το ενοίκιο δεν χρησιμοποιείται για τον υπολογισμό των κοινοχρήστων.
-
-Η πολυκατοικία έχει τρία διαμερίσματα με διαφορετικά μεγέθη.
-Το διαμέρισμα του Πολίτη είναι 93 τετραγωνικά μέτρα.
-Το διαμέρισμα της Τζίνας είναι 63 τετραγωνικά μέτρα.
-Το διαμέρισμα της Χαράς είναι 45 τετραγωνικά μέτρα.
-Το μεγαλύτερο διαμέρισμα είναι του Πολίτη.
-Το μικρότερο διαμέρισμα είναι της Χαράς.
-Το διαμέρισμα της Τζίνας είναι μεγαλύτερο από το διαμέρισμα της Χαράς.
+DOCS_DIR = "docs"
+CACHE_DIR = "./HF-CACHE"
 
 
-Η Τζίνα κατοικεί στον πρώτο όροφο.
-Η Χαρά κατοικεί στον δεύτερο όροφο.
-Ο Πολίτης κατοικεί στον δεύτερο όροφο.
-Η Τζίνα έχει ελαφρυντικό στη χρέωση του ανελκυστήρα επειδή το διαμέρισμά της βρίσκεται στον πρώτο όροφο.
+def build_or_load_vectorstore():
+    """Διαβάζει όλα τα PDFs από τον φάκελο docs/ και φτιάχνει τη Vector Database (FAISS)."""
+    if not os.path.exists(DOCS_DIR):
+        os.makedirs(DOCS_DIR)
 
-Τα κοινόχρηστα πρέπει να υπολογίζονται με τον ίδιο τρόπο κάθε μήνα.
-Τα ποσοστά συμμετοχής δεν πρέπει να αλλάζουν αυθαίρετα από μήνα σε μήνα.
-Σε περίπτωση αμφιβολίας για μια δαπάνη πρέπει να ελέγχεται ο κανονισμός της πολυκατοικίας.
+    # 1. Loading PDFs
+    loader = PyPDFDirectoryLoader(DOCS_DIR)
+    raw_documents = loader.load()
 
-Ο Πολίτης καθυστερεί συνήθως να πληρώσει τα κοινόχρηστα.
-Ο Πολίτης επιθυμεί να παρκάρει στο υπόγειο της πολυκατοικίας, αλλά αυτό δεν είναι υλοποιήσιμο.
-Η απαίτηση του Πολίτη να παρκάρει στο υπόγειο δημιουργεί προβλήματα και εντάσεις.
+    if not raw_documents:
+        print(f"⚠️ Προειδοποίηση: Το τοπικό docs/ δεν έχει PDFs ακόμα.")
+        return None
 
-Οι ένοικοι και ιδιοκτήτες των διαμερισμάτων της πολυκατοικίας είναι η Τζίνα, η Χαρά και ο Πολίτης.
-Στην πολυκατοικία διαμένουν τρία πρόσωπα: η Τζίνα, η Χαρά και ο Πολίτης.
-Ο ένοικος του διαμερίσματος A1 είναι η Τζίνα.
-Ο ένοικος του διαμερίσματος B1 είναι η Χαρά.
-Ο ένοικος του διαμερίσματος B2 είναι ο Πολίτης.
-"""
-
-# --- 2. GLOBAL METABΛΗΤΕΣ ΓΙΑ ΤΑ EMBEDDINGS ---
-knowledge_sentences = []
-knowledge_embeddings = None
-embedding_model = None
-
-
-# --- 3. LOAD MODELS & PREPARE KNOWLEDGE ---
-def load_models():
-    global embedding_model, knowledge_sentences, knowledge_embeddings
-    
-    # Α. Loading Embedding Model
-    embedding_model = SentenceTransformer(
-        'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2', 
-        cache_folder="./HF-CACHE"
+    # 2. Chunking (Τεμαχισμός)
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=500,
+        chunk_overlap=50,
+        separators=["\n\n", "\n", " ", ""]
     )
-    
-    # Β. Προετοιμασία της Βάσης Γνώσης & Embeddings
-    knowledge_sentences = [s.strip() for s in building_knowledge.split('\n') if s.strip()]
-    knowledge_embeddings = embedding_model.encode(knowledge_sentences)
+    docs = text_splitter.split_documents(raw_documents)
 
-    # Γ. Φόρτωση LLM Pipeline
+    # 3. HuggingFace Embeddings (Ίδιο μοντέλο που χρησιμοποιούσες)
+    embeddings = HuggingFaceEmbeddings(
+        model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+        cache_folder=CACHE_DIR
+    )
+
+    # 4. Αποθήκευση στο FAISS Vector Store
+    v_store = FAISS.from_documents(docs, embeddings)
+    return v_store
+
+
+def load_models():
+    """Φόρτωση των μοντέλων κατά την εκκίνηση της εφαρμογής."""
+    global vectorstore, pipe
+    
+    # Α. Φόρτωση/Δημιουργία Vector Database από τα PDFs
+    vectorstore = build_or_load_vectorstore()
+
+    # Β. Φόρτωση LLM Pipeline (Qwen 3.5 0.8B)
     device_id = 0 if torch.cuda.is_available() else -1
     pipe = pipeline(
         "text-generation",
         model="Qwen/Qwen3.5-0.8B",
-        model_kwargs={"cache_dir": "./HF-CACHE", "torch_dtype": "auto"},
+        model_kwargs={"cache_dir": CACHE_DIR, "torch_dtype": "auto"},
         device=device_id
     )
-    
-    return embedding_model, pipe
+
+    return vectorstore, pipe
 
 
-# --- 4. RAG FUNCTION ---
 def ask_rag(user_query, history, pipe, max_history_turns=3):
-    global embedding_model, knowledge_sentences, knowledge_embeddings
-    
-    # A. Retrieval
-    query_embedding = embedding_model.encode([user_query])
-    similarities = cosine_similarity(query_embedding, knowledge_embeddings).flatten()
-    
-    top_k = 4
-    top_indices = np.argsort(similarities)[-top_k:][::-1]
-    
-    retrieved_sentences = [knowledge_sentences[i] for i in top_indices]
-    context = "\n".join([f"- {s}" for s in retrieved_sentences])
+    """Production RAG Function με LangChain Retrieval & Memory Window."""
+    global vectorstore
 
-    # B. Προετοιμασία active_messages με Sliding Window
-    # Διατηρούμε το system message (αν υπάρχει) και τα τελευταία N μηνύματα
+    context = ""
+    # A. Retrieval από τα PDFs (αν υπάρχει vectorstore)
+    if vectorstore is not None:
+        # Παίρνουμε τα 4 πιο σχετικά chunks από τα PDFs
+        retrieved_docs = vectorstore.similarity_search(user_query, k=4)
+        context = "\n".join([f"- {doc.page_content}" for doc in retrieved_docs])
+
+    # B. Sliding Window History Management
     window_size = max_history_turns * 2
     
     if history and history[0].get("role") == "system":
@@ -147,21 +92,17 @@ def ask_rag(user_query, history, pipe, max_history_turns=3):
         }
         past_turns = history
 
-    # Κρατάμε τα πιο πρόσφατα μηνύματα
     recent_history = past_turns[-window_size:] if len(past_turns) > window_size else past_turns
-    
-    # Δημιουργούμε τη νέα λίστα μηνυμάτων για το prompt
     active_messages = [system_msg] + [msg.copy() for msg in recent_history]
 
-    # C. Addition of the current User Query with the Context at the end
+    # C. Dynamic Context Injection
     formatted_user_prompt = (
-        f"Απάντησε στα Ελληνικά χρησιμοποιώντας τις παρακάτω πληροφορίες.\n\n"
-        f"Πληροφορίες:\n{context}\n\n"
+        f"Απάντησε στα Ελληνικά χρησιμοποιώντας αποκλειστικά τις παρακάτω πληροφορίες από τα έγγραφα.\n\n"
+        f"Πληροφορίες από PDFs:\n{context if context else 'Δεν βρέθηκαν διαθέσιμα έγγραφα.'}\n\n"
         f"Ερώτηση: {user_query}"
     )
-    
-    # Υποχρεωτικά το τελευταίο element πρέπει να είναι role: user
-    active_messages.append({"role": "user", "content": formatted_user_prompt}) #Τελικη Λιστα με ενα System message και τα τελευταία μηνύματα του χρήστη και του βοηθού, με το τελευταίο να είναι η τρέχουσα ερώτηση του χρήστη.
+
+    active_messages.append({"role": "user", "content": formatted_user_prompt})
 
     # D. Generation
     output = pipe(
@@ -172,14 +113,14 @@ def ask_rag(user_query, history, pipe, max_history_turns=3):
         return_full_text=False
     )
 
-    # E. Extract Response
+    # E. Response Extraction
     raw_response = output[0]["generated_text"]
     if isinstance(raw_response, list):
         response_text = raw_response[-1]["content"].strip()
     else:
         response_text = raw_response.strip()
 
-    # F. Ενημέρωση του καθαρού ιστορικού (χωρίς τα context prompts)
+    # F. History Update
     history.append({"role": "user", "content": user_query})
     history.append({"role": "assistant", "content": response_text})
     
