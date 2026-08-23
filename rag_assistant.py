@@ -1,33 +1,37 @@
 import os
-import torch
-from threading import Thread
-from transformers import pipeline, TextIteratorStreamer
+from dotenv import load_dotenv
 
 # --- LANGCHAIN IMPORTS ---
 from langchain_community.document_loaders import PyPDFDirectoryLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings, HuggingFaceEndpoint, ChatHuggingFace
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import HumanMessage, AIMessage
 
-# --- GLOBAL ΜΕΤΑΒΛΗΤΕΣ ---
+# Φόρτωση API Key από το .env αρχείο
+load_dotenv()
+
+# --- GLOBAL METABΛΗΤΕΣ ---
 vectorstore = None
-pipe = None
-
 DOCS_DIR = "docs"
-CACHE_DIR = "./HF-CACHE"
 
 
 def build_or_load_vectorstore():
-    """Διαβάζει όλα τα PDFs από τον φάκελο docs/ και φτιάχνει τη Vector Database (FAISS)."""
+    """Διαβάζει τα PDFs από τον φάκελο docs/ και φτιάχνει τη Vector Database (FAISS)."""
     if not os.path.exists(DOCS_DIR):
         os.makedirs(DOCS_DIR)
 
     # 1. Loading PDFs
     loader = PyPDFDirectoryLoader(DOCS_DIR)
-    raw_documents = loader.load()
+    try:
+        raw_documents = loader.load()
+    except Exception as e:
+        print(f"⚠️ Σφάλμα κατά τη φόρτωση των PDFs: {e}")
+        return None
 
     if not raw_documents:
-        print(f"⚠️ Προειδοποίηση: Το τοπικό docs/ δεν έχει PDFs ακόμα.")
+        print(f"⚠️ Προειδοποίηση: Ο φάκελος '{DOCS_DIR}' είναι άδειος ή δεν βρέθηκαν PDF αρχεία.")
         return None
 
     # 2. Chunking (Τεμαχισμός)
@@ -38,85 +42,87 @@ def build_or_load_vectorstore():
     )
     docs = text_splitter.split_documents(raw_documents)
 
-    # 3. HuggingFace Embeddings
+    # 3. Fast Local Embeddings (Sentence Transformers)
     embeddings = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
-        cache_folder=CACHE_DIR
+        model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     )
 
-    # 4. Αποθήκευση στο FAISS Vector Store
-    v_store = FAISS.from_documents(docs, embeddings)
-    return v_store
+    # 4. Vector Store creation
+    return FAISS.from_documents(docs, embeddings)
 
 
 def load_models():
-    """Φόρτωση των μοντέλων κατά την εκκίνηση της εφαρμογής."""
-    global vectorstore, pipe
-    
-    # Α. Φόρτωση/Δημιουργία Vector Database από τα PDFs
+    """Αρχικοποίηση του Vector Store και σύνδεση με το Hugging Face API."""
+    global vectorstore
+
+    # Α. Φόρτωση Vector Store
     vectorstore = build_or_load_vectorstore()
 
-    # Β. Φόρτωση Local LLM Pipeline (Qwen 3.5 0.8B)
-    device_id = 0 if torch.cuda.is_available() else -1
-    pipe = pipeline(
-        "text-generation",
-        model="Qwen/Qwen3.5-0.8B",
-        model_kwargs={"cache_dir": CACHE_DIR, "torch_dtype": "auto"},
-        device=device_id
+    # Β. Σύνδεση με το Open-Source LLM μέσω Serverless API
+    hf_api_token = os.getenv("HUGGINGFACEHUB_API_TOKEN")
+
+    llm_endpoint = HuggingFaceEndpoint(
+        repo_id="Qwen/Qwen2.5-72B-Instruct",
+        task="text-generation",
+        max_new_tokens=512,
+        temperature=0.1,
+        huggingfacehub_api_token=hf_api_token
     )
+    
+    # Χρήση του ChatHuggingFace wrapper για σωστό chat formatting
+    chat_llm = ChatHuggingFace(llm=llm_endpoint)
 
-    return vectorstore, pipe
+    return vectorstore, chat_llm
 
 
-def ask_rag_stream(user_query, history, max_history_turns=3):
-    """Generator Function που επιστρέφει tokens σε real-time (Streaming)."""
-    global vectorstore, pipe
+def ask_rag(user_query, history, llm, max_history_turns=3):
+    """Production RAG Function με LangChain Similarity Search & Cloud API Inference."""
+    global vectorstore
 
     context = ""
-    # A. Similarity Search στα PDFs
+    # A. Retrieval από τα PDFs
     if vectorstore is not None:
-        retrieved_docs = vectorstore.similarity_search(user_query, k=4)
-        context = "\n".join([f"- {doc.page_content}" for doc in retrieved_docs])
+        try:
+            retrieved_docs = vectorstore.similarity_search(user_query, k=4)
+            context = "\n".join([f"- {doc.page_content}" for doc in retrieved_docs])
+        except Exception as e:
+            print(f"⚠️ Σφάλμα κατά το similarity search: {e}")
+            context = ""
 
-    # B. Sliding Window History Management
+    if not context:
+        context = "Δεν υπάρχουν διαθέσιμα σχετικά έγγραφα."
+
+    # B. History Management (Convert list of dicts to LangChain BaseMessages)
     window_size = max_history_turns * 2
     recent_history = history[-window_size:] if history else []
     
-    history_str = ""
+    chat_messages = []
     for msg in recent_history:
-        role = "Χρήστης" if msg["role"] == "user" else "Βοηθός"
-        history_str += f"{role}: {msg['content']}\n"
+        if msg["role"] == "user":
+            chat_messages.append(HumanMessage(content=msg["content"]))
+        elif msg["role"] == "assistant":
+            chat_messages.append(AIMessage(content=msg["content"]))
 
-    # C. System Prompt Construction
-    prompt = (
-        "<|im_start|>system\n"
-        "Είσαι ένας εξειδικευμένος βοηθός διαχείρισης κτηρίου. "
-        "Απάντησε στην ερώτηση του χρήστη αποκλειστικά στα Ελληνικά, χρησιμοποιώντας τις πληροφορίες από τα έγγραφα.\n\n"
-        f"--- ΠΛΗΡΟΦΟΡΙΕΣ ΑΠΟ PDFs ---\n{context if context else 'Δεν υπάρχουν διαθέσιμα έγγραφα.'}\n---------------------------\n"
-        f"<|im_end|>\n"
-        f"{history_str}"
-        f"<|im_start|>user\n{user_query}<|im_end|>\n"
-        f"<|im_start|>assistant\n"
-    )
+    # C. System Prompt & Chat Template Construction
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", 
+         "Είσαι ένας εξειδικευμένος βοηθός διαχείρισης κτηρίου και κοινοχρήστων.\n"
+         "Απάντησε στην ερώτηση του χρήστη αποκλειστικά στα Ελληνικά, χρησιμοποιώντας τις πληροφορίες από τα έγγραφα.\n\n"
+         "--- ΠΛΗΡΟΦΟΡΙΕΣ ΑΠΟ PDFs ---\n{context}\n---------------------------"),
+        MessagesPlaceholder(variable_name="history"),
+        ("human", "{question}")
+    ])
 
-    # D. Setup Streamer & Threading
-    tokenizer = pipe.tokenizer
-    streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
+    # D. Execution via LCEL Chain
+    try:
+        chain = prompt | llm
+        response = chain.invoke({
+            "context": context,
+            "history": chat_messages,
+            "question": user_query
+        })
+        response_text = response.content.strip()
+    except Exception as e:
+        response_text = f"Σφάλμα κατά την κλήση του API: {str(e)}"
 
-    generation_kwargs = dict(
-        text_inputs=prompt,
-        max_new_tokens=256,
-        do_sample=True,
-        temperature=0.2,
-        streamer=streamer
-    )
-
-    # Εκτέλεση του pipeline σε ξεχωριστό thread για να μην μπλοκάρει το generator
-    thread = Thread(target=pipe, kwargs=generation_kwargs)
-    thread.start()
-
-    # E. Yield tokens καθώς παράγονται
-    partial_text = ""
-    for new_text in streamer:
-        partial_text += new_text
-        yield partial_text
+    return response_text

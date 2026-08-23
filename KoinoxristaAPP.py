@@ -29,15 +29,14 @@ with st.sidebar:
     st.caption("Διαχειριστής: Σωτήρης Σοφικίτης")
     st.divider()
 
-    st.subheader("📄 Έκδοση Κοινοχρήστων (PDF)")
-    st.write("Συμπλήρωσε τα στοιχεία του μήνα για παραγωγή ειδοποιητηρίου.")
+    st.subheader("📄 Έκδοση Κοινοχρήστων")
+    st.write("Συμπλήρωσε τα στοιχεία του μήνα για υπολογισμό.")
 
     month_input = st.text_input("Μήνας / Έτος", value="Μάρτιος 2026")
     hron_bill = st.number_input("Λογαριασμός ΗΡΩΝ (€)", min_value=0.0, value=120.0, step=5.0)
     water_bill = st.number_input("Λογαριασμός Νερού (€) - [0 αν δεν υπάρχει]", min_value=0.0, value=0.0, step=5.0)
 
-    if st.button("🚀 Δημιουργία PDF Κοινοχρήστων", use_container_width=True):
-        # Υπολογισμός με βάση τα ποσοστά
+    if st.button("🚀 Υπολογισμός Κοινοχρήστων", use_container_width=True):
         tzina_hron = hron_bill * 0.2901
         chara_hron = hron_bill * 0.2472
         politis_hron = hron_bill * 0.4627
@@ -68,7 +67,7 @@ for message in st.session_state.history:
         st.markdown(content)
 
 # Είσοδος νέας ερώτησης
-if user_query := st.chat_input("Πράψτε την ερώτησή σας εδώ..."):
+if user_query := st.chat_input("Γράψτε την ερώτησή σας εδώ..."):
     # 1. Εμφάνιση ερώτησης χρήστη
     st.chat_message("user").markdown(user_query)
 
@@ -81,3 +80,7 @@ if user_query := st.chat_input("Πράψτε την ερώτησή σας εδώ
                 llm=st.session_state.llm
             )
             st.markdown(response)
+            
+    # 3. Ενημέρωση ιστορικού
+    st.session_state.history.append({"role": "user", "content": user_query})
+    st.session_state.history.append({"role": "assistant", "content": response})
