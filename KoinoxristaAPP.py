@@ -1,113 +1,83 @@
-import os
+import streamlit as st
 from dotenv import load_dotenv
 
-# --- LANGCHAIN IMPORTS ---
-from langchain_community.document_loaders import PyPDFDirectoryLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import FAISS
-from langchain_huggingface import HuggingFaceEmbeddings, HuggingFaceEndpoint
+# Εισαγωγή συναρτήσεων από το rag_assistant.py
+from rag_assistant import load_models, ask_rag
 
-# Φόρτωση API Key από το .env αρχείο
+# Φόρτωση μεταβλητών περιβάλλοντος (.env)
 load_dotenv()
 
-# --- GLOBAL METABΛΗΤΕΣ ---
-vectorstore = None
-llm_chain = None
+# --- ΡΥΘΜΙΣΗ ΣΕΛΙΔΑΣ STREAMLIT ---
+st.set_page_config(
+    page_title="Διαχείριση Πολυκατοικίας - Φιλικών 35",
+    page_icon="🏢",
+    layout="wide"
+)
 
-DOCS_DIR = "docs"
+# --- INITIALIZATION STATE ---
+if "history" not in st.session_state:
+    st.session_state.history = []
 
+if "models_loaded" not in st.session_state:
+    with st.spinner("📦 Φόρτωση μοντέλων και εγγράφων PDF..."):
+        st.session_state.vectorstore, st.session_state.llm = load_models()
+    st.session_state.models_loaded = True
 
-def build_or_load_vectorstore():
-    """Διαβάζει τα PDFs από τον φάκελο docs/ και φτιάχνει τη Vector Database (FAISS)."""
-    if not os.path.exists(DOCS_DIR):
-        os.makedirs(DOCS_DIR)
+# --- SIDEBAR: ΣΤΟΙΧΕΙΑ & PDF GENERATOR ---
+with st.sidebar:
+    st.title("🏢 Φιλικών 35, Περιστέρι")
+    st.caption("Διαχειριστής: Σωτήρης Σοφικίτης")
+    st.divider()
 
-    # 1. Loading PDFs
-    loader = PyPDFDirectoryLoader(DOCS_DIR)
-    raw_documents = loader.load()
+    st.subheader("📄 Έκδοση Κοινοχρήστων (PDF)")
+    st.write("Συμπλήρωσε τα στοιχεία του μήνα για παραγωγή ειδοποιητηρίου.")
 
-    if not raw_documents:
-        print(f"⚠️ Προειδοποίηση: Ο φάκελος '{DOCS_DIR}' είναι άδειος.")
-        return None
+    month_input = st.text_input("Μήνας / Έτος", value="Μάρτιος 2026")
+    hron_bill = st.number_input("Λογαριασμός ΗΡΩΝ (€)", min_value=0.0, value=120.0, step=5.0)
+    water_bill = st.number_input("Λογαριασμός Νερού (€) - [0 αν δεν υπάρχει]", min_value=0.0, value=0.0, step=5.0)
 
-    # 2. Chunking (Τεμαχισμός)
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=500,
-        chunk_overlap=50,
-        separators=["\n\n", "\n", " ", ""]
-    )
-    docs = text_splitter.split_documents(raw_documents)
+    if st.button("🚀 Δημιουργία PDF Κοινοχρήστων", use_container_width=True):
+        # Υπολογισμός με βάση τα ποσοστά
+        tzina_hron = hron_bill * 0.2901
+        chara_hron = hron_bill * 0.2472
+        politis_hron = hron_bill * 0.4627
 
-    # 3. Fast Local Embeddings (Sentence Transformers)
-    embeddings = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-    )
+        water_per_apt = water_bill / 3.0 if water_bill > 0 else 0.0
 
-    # 4. Vector Store creation
-    return FAISS.from_documents(docs, embeddings)
+        tzina_total = tzina_hron + 6.70 + 10.33 + water_per_apt
+        chara_total = chara_hron + 6.70 + 11.50 + water_per_apt
+        politis_total = politis_hron + 6.70 + 11.50 + water_per_apt
 
+        st.success("✅ Ο υπολογισμός ολοκληρώθηκε!")
+        st.markdown(f"""
+        **Ανακεφαλαίωση {month_input}:**
+        * **A1 (Τζίνα):** {tzina_total:.2f} €
+        * **B1 (Χαρά):** {chara_total:.2f} €
+        * **B2 (Πολίτης):** {politis_total:.2f} €
+        """)
 
-def load_models():
-    """Αρχικοποίηση του Vector Store και σύνδεση με το Hugging Face API."""
-    global vectorstore, llm_chain
+# --- ΚΥΡΙΩΣ ΜΕΡΟΣ: CHATBOT UI ---
+st.title("🤖 AI Βοηθός Διαχείρισης")
+st.caption("Ρώτα οτιδήποτε σχετικά με τον κανονισμό, τα ενοίκια ή τα κοινόχρηστα της πολυκατοικίας.")
 
-    # Α. Φόρτωση Vector Store
-    vectorstore = build_or_load_vectorstore()
+# Εμφάνιση Ιστορικού Chat
+for message in st.session_state.history:
+    role = message["role"]
+    content = message["content"]
+    with st.chat_message(role):
+        st.markdown(content)
 
-    # Β. Σύνδεση με το Open-Source LLM μέσω Serverless API
-    # Χρησιμοποιούμε το Qwen/Qwen2.5-72B-Instruct που είναι κορυφαίο στα Ελληνικά
-    hf_api_token = os.getenv("HUGGINGFACEHUB_API_TOKEN")
-    
-    llm = HuggingFaceEndpoint(
-        repo_id="Qwen/Qwen2.5-72B-Instruct",
-        task="text-generation",
-        max_new_tokens=256,
-        temperature=0.1,
-        huggingfacehub_api_token=hf_api_token
-    )
+# Είσοδος νέας ερώτησης
+if user_query := st.chat_input("Πράψτε την ερώτησή σας εδώ..."):
+    # 1. Εμφάνιση ερώτησης χρήστη
+    st.chat_message("user").markdown(user_query)
 
-    return vectorstore, llm
-
-
-def ask_rag(user_query, history, llm, max_history_turns=3):
-    """Production RAG Function με LangChain Similarity Search & Cloud API Inference."""
-    global vectorstore
-
-    context = ""
-    # A. Retrieval από τα PDFs
-    if vectorstore is not None:
-        retrieved_docs = vectorstore.similarity_search(user_query, k=4)
-        context = "\n".join([f"- {doc.page_content}" for doc in retrieved_docs])
-
-    # B. History Management (Sliding Window)
-    window_size = max_history_turns * 2
-    recent_history = history[-window_size:] if history else []
-    
-    history_str = ""
-    for msg in recent_history:
-        role = "Χρήστης" if msg["role"] == "user" else "Βοηθός"
-        history_str += f"{role}: {msg['content']}\n"
-
-    # C. System Prompt Construction
-    prompt = (
-        "<|im_start|>system\n"
-        "Είσαι ένας εξειδικευμένος βοηθός διαχείρισης κτηρίου. "
-        "Απάντησε στην ερώτηση του χρήστη αποκλειστικά στα Ελληνικά, χρησιμοποιώντας τις πληροφορίες από τα έγγραφα.\n\n"
-        f"--- ΠΛΗΡΟΦΟΡΙΕΣ ΑΠΟ PDFs ---\n{context if context else 'Δεν υπάρχουν διαθέσιμα έγγραφα.'}\n---------------------------\n"
-        f"<|im_end|>\n"
-        f"{history_str}"
-        f"<|im_start|>user\n{user_query}<|im_end|>\n"
-        f"<|im_start|>assistant\n"
-    )
-
-    # D. API Call (Εκτελείται στο Cloud, όχι τοπικά!)
-    try:
-        response_text = llm.invoke(prompt).strip()
-    except Exception as e:
-        response_text = f"Σφάλμα κατά την κλήση του API: {str(e)}"
-
-    # E. Ενημέρωση History
-    history.append({"role": "user", "content": user_query})
-    history.append({"role": "assistant", "content": response_text})
-
-    return response_text
+    # 2. Απάντηση από το RAG
+    with st.chat_message("assistant"):
+        with st.spinner("🔍 Αναζήτηση στα έγγραφα & παραγωγή απάντησης..."):
+            response = ask_rag(
+                user_query=user_query,
+                history=st.session_state.history,
+                llm=st.session_state.llm
+            )
+            st.markdown(response)

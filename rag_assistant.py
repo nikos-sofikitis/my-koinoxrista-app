@@ -1,7 +1,7 @@
 import os
 import torch
-from sentence_transformers import SentenceTransformer
-from transformers import pipeline
+from threading import Thread
+from transformers import pipeline, TextIteratorStreamer
 
 # --- LANGCHAIN IMPORTS ---
 from langchain_community.document_loaders import PyPDFDirectoryLoader
@@ -9,7 +9,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 
-# --- GLOBAL METABΛΗΤΕΣ ---
+# --- GLOBAL ΜΕΤΑΒΛΗΤΕΣ ---
 vectorstore = None
 pipe = None
 
@@ -38,7 +38,7 @@ def build_or_load_vectorstore():
     )
     docs = text_splitter.split_documents(raw_documents)
 
-    # 3. HuggingFace Embeddings (Ίδιο μοντέλο που χρησιμοποιούσες)
+    # 3. HuggingFace Embeddings
     embeddings = HuggingFaceEmbeddings(
         model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
         cache_folder=CACHE_DIR
@@ -56,7 +56,7 @@ def load_models():
     # Α. Φόρτωση/Δημιουργία Vector Database από τα PDFs
     vectorstore = build_or_load_vectorstore()
 
-    # Β. Φόρτωση LLM Pipeline (Qwen 3.5 0.8B)
+    # Β. Φόρτωση Local LLM Pipeline (Qwen 3.5 0.8B)
     device_id = 0 if torch.cuda.is_available() else -1
     pipe = pipeline(
         "text-generation",
@@ -68,60 +68,55 @@ def load_models():
     return vectorstore, pipe
 
 
-def ask_rag(user_query, history, pipe, max_history_turns=3):
-    """Production RAG Function με LangChain Retrieval & Memory Window."""
-    global vectorstore
+def ask_rag_stream(user_query, history, max_history_turns=3):
+    """Generator Function που επιστρέφει tokens σε real-time (Streaming)."""
+    global vectorstore, pipe
 
     context = ""
-    # A. Retrieval από τα PDFs (αν υπάρχει vectorstore)
+    # A. Similarity Search στα PDFs
     if vectorstore is not None:
-        # Παίρνουμε τα 4 πιο σχετικά chunks από τα PDFs
         retrieved_docs = vectorstore.similarity_search(user_query, k=4)
         context = "\n".join([f"- {doc.page_content}" for doc in retrieved_docs])
 
     # B. Sliding Window History Management
     window_size = max_history_turns * 2
+    recent_history = history[-window_size:] if history else []
     
-    if history and history[0].get("role") == "system":
-        system_msg = history[0]
-        past_turns = history[1:]
-    else:
-        system_msg = {
-            "role": "system", 
-            "content": "Είσαι ένας χρήσιμος βοηθός διαχείρισης κτηρίου. Απάντησε στην ερώτηση αποκλειστικά στα Ελληνικά με βάση τις πληροφορίες που σου δίνονται."
-        }
-        past_turns = history
+    history_str = ""
+    for msg in recent_history:
+        role = "Χρήστης" if msg["role"] == "user" else "Βοηθός"
+        history_str += f"{role}: {msg['content']}\n"
 
-    recent_history = past_turns[-window_size:] if len(past_turns) > window_size else past_turns
-    active_messages = [system_msg] + [msg.copy() for msg in recent_history]
-
-    # C. Dynamic Context Injection
-    formatted_user_prompt = (
-        f"Απάντησε στα Ελληνικά χρησιμοποιώντας αποκλειστικά τις παρακάτω πληροφορίες από τα έγγραφα.\n\n"
-        f"Πληροφορίες από PDFs:\n{context if context else 'Δεν βρέθηκαν διαθέσιμα έγγραφα.'}\n\n"
-        f"Ερώτηση: {user_query}"
+    # C. System Prompt Construction
+    prompt = (
+        "<|im_start|>system\n"
+        "Είσαι ένας εξειδικευμένος βοηθός διαχείρισης κτηρίου. "
+        "Απάντησε στην ερώτηση του χρήστη αποκλειστικά στα Ελληνικά, χρησιμοποιώντας τις πληροφορίες από τα έγγραφα.\n\n"
+        f"--- ΠΛΗΡΟΦΟΡΙΕΣ ΑΠΟ PDFs ---\n{context if context else 'Δεν υπάρχουν διαθέσιμα έγγραφα.'}\n---------------------------\n"
+        f"<|im_end|>\n"
+        f"{history_str}"
+        f"<|im_start|>user\n{user_query}<|im_end|>\n"
+        f"<|im_start|>assistant\n"
     )
 
-    active_messages.append({"role": "user", "content": formatted_user_prompt})
+    # D. Setup Streamer & Threading
+    tokenizer = pipe.tokenizer
+    streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
 
-    # D. Generation
-    output = pipe(
-        active_messages, 
-        max_new_tokens=150, 
-        do_sample=False,
-        pad_token_id=pipe.tokenizer.eos_token_id,
-        return_full_text=False
+    generation_kwargs = dict(
+        text_inputs=prompt,
+        max_new_tokens=256,
+        do_sample=True,
+        temperature=0.2,
+        streamer=streamer
     )
 
-    # E. Response Extraction
-    raw_response = output[0]["generated_text"]
-    if isinstance(raw_response, list):
-        response_text = raw_response[-1]["content"].strip()
-    else:
-        response_text = raw_response.strip()
+    # Εκτέλεση του pipeline σε ξεχωριστό thread για να μην μπλοκάρει το generator
+    thread = Thread(target=pipe, kwargs=generation_kwargs)
+    thread.start()
 
-    # F. History Update
-    history.append({"role": "user", "content": user_query})
-    history.append({"role": "assistant", "content": response_text})
-    
-    return response_text
+    # E. Yield tokens καθώς παράγονται
+    partial_text = ""
+    for new_text in streamer:
+        partial_text += new_text
+        yield partial_text
