@@ -1,29 +1,47 @@
+# 1. Load environment variables from a .env file
 import os
 from dotenv import load_dotenv
 
-# --- LANGCHAIN IMPORTS ---
+# --- LANGCHAIN COMMUNITY IMPORTS ---
 from langchain_community.document_loaders import PyPDFDirectoryLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-from langchain_huggingface import HuggingFaceEmbeddings, HuggingFaceEndpoint, ChatHuggingFace
+
+# --- LANGCHAIN CORE IMPORTS ---
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.output_parsers import StrOutputParser
 
-# Φόρτωση API Key από το .env αρχείο
-load_dotenv()
+# --- OTHER INTEGRATIONS ---
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_huggingface import HuggingFaceEmbeddings, HuggingFaceEndpoint, ChatHuggingFace
 
-# --- GLOBAL METABΛΗΤΕΣ ---
-vectorstore = None
-DOCS_DIR = "docs"
+load_dotenv()  # Load environment variables from .env file
+docs_dir = 'docs'  # Directory containing PDF files
+FAISS_INDEX_PATH = 'faiss_index'  # Path to save/load FAISS index
 
 
 def build_or_load_vectorstore():
-    """Διαβάζει τα PDFs από τον φάκελο docs/ και φτιάχνει τη Vector Database (FAISS)."""
-    if not os.path.exists(DOCS_DIR):
-        os.makedirs(DOCS_DIR)
+    # 1. Load a light embedding model from HuggingFace that supports multilingual embeddings
+    embeddings = HuggingFaceEmbeddings(
+        model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    ) 
+    
+    # 2. Check if FAISS index already exists
+    if os.path.exists(FAISS_INDEX_PATH):
+        print("Loading Existing FAISS index from disk...")
+        return FAISS.load_local(
+            FAISS_INDEX_PATH, 
+            embeddings,
+            allow_dangerous_deserialization=True
+        )
 
-    # 1. Loading PDFs
-    loader = PyPDFDirectoryLoader(DOCS_DIR)
+    print("Building FAISS index from PDF documents...")
+
+    if not os.path.exists(docs_dir):
+        os.makedirs(docs_dir)
+
+    # 3. Loading PDFs
+    loader = PyPDFDirectoryLoader(docs_dir)
     try:
         raw_documents = loader.load()
     except Exception as e:
@@ -31,35 +49,30 @@ def build_or_load_vectorstore():
         return None
 
     if not raw_documents:
-        print(f"⚠️ Προειδοποίηση: Ο φάκελος '{DOCS_DIR}' είναι άδειος ή δεν βρέθηκαν PDF αρχεία.")
+        print(f"⚠️ Προειδοποίηση: Ο φάκελος '{docs_dir}' είναι άδειος ή δεν βρέθηκαν PDF αρχεία.")
         return None
 
-    # 2. Chunking (Τεμαχισμός)
+    # CHUNKING
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=500,
         chunk_overlap=50,
         separators=["\n\n", "\n", " ", ""]
     )
+
     docs = text_splitter.split_documents(raw_documents)
 
-    # 3. Fast Local Embeddings (Sentence Transformers)
-    embeddings = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-    )
-
-    # 4. Vector Store creation
-    return FAISS.from_documents(docs, embeddings)
+    # CREATE VECTOR STORE
+    vectorstore = FAISS.from_documents(docs, embeddings)
+    vectorstore.save_local(FAISS_INDEX_PATH)  # Save the FAISS index to disk
+    
+    return vectorstore
 
 
 def load_models():
-    """Αρχικοποίηση του Vector Store και σύνδεση με το Hugging Face API."""
-    global vectorstore
-
-    # Α. Φόρτωση Vector Store
+    # INITIALIZE VECTORSTORE
     vectorstore = build_or_load_vectorstore()
 
-    # Β. Σύνδεση με το Open-Source LLM μέσω Serverless API
-    hf_api_token = os.getenv("HUGGINGFACEHUB_API_TOKEN")
+    hf_api_token = os.getenv("HUGGINGFACEHUB_API_TOKEN") or os.getenv("HF_TOKEN")
 
     llm_endpoint = HuggingFaceEndpoint(
         repo_id="Qwen/Qwen2.5-72B-Instruct",
@@ -68,31 +81,28 @@ def load_models():
         temperature=0.1,
         huggingfacehub_api_token=hf_api_token
     )
-    
-    # Χρήση του ChatHuggingFace wrapper για σωστό chat formatting
+
     chat_llm = ChatHuggingFace(llm=llm_endpoint)
 
     return vectorstore, chat_llm
 
 
-def ask_rag(user_query, history, llm, max_history_turns=3):
-    """Production RAG Function με LangChain Similarity Search & Cloud API Inference."""
-    global vectorstore
-
+def ask_rag(user_query, history, vectorstore, chat_llm, max_history_turns=3):
+    # Production RAG using LCEL Chain and StrOutputParser
     context = ""
-    # A. Retrieval από τα PDFs
+
     if vectorstore is not None:
         try:
             retrieved_docs = vectorstore.similarity_search(user_query, k=4)
-            context = "\n".join([f"- {doc.page_content}" for doc in retrieved_docs])
+            context = "\n\n".join([doc.page_content for doc in retrieved_docs]) 
         except Exception as e:
-            print(f"⚠️ Σφάλμα κατά το similarity search: {e}")
+            print(f"⚠️ Σφάλμα κατά την ανάκτηση εγγράφων: {e}")
             context = ""
-
+    
     if not context:
         context = "Δεν υπάρχουν διαθέσιμα σχετικά έγγραφα."
 
-    # B. History Management (Convert list of dicts to LangChain BaseMessages)
+    # History Management
     window_size = max_history_turns * 2
     recent_history = history[-window_size:] if history else []
     
@@ -102,8 +112,8 @@ def ask_rag(user_query, history, llm, max_history_turns=3):
             chat_messages.append(HumanMessage(content=msg["content"]))
         elif msg["role"] == "assistant":
             chat_messages.append(AIMessage(content=msg["content"]))
-
-    # C. System Prompt & Chat Template Construction
+    
+    # System Prompt
     prompt = ChatPromptTemplate.from_messages([
         ("system", 
          "Είσαι ένας εξειδικευμένος βοηθός διαχείρισης κτηρίου και κοινοχρήστων.\n"
@@ -113,16 +123,16 @@ def ask_rag(user_query, history, llm, max_history_turns=3):
         ("human", "{question}")
     ])
 
-    # D. Execution via LCEL Chain
+    # Execution via LCEL CHAIN
     try:
-        chain = prompt | llm
-        response = chain.invoke({
-            "context": context,
-            "history": chat_messages,
+        chain = prompt | chat_llm | StrOutputParser()
+        response_text = chain.invoke({
+            "context": context, 
+            "history": chat_messages, 
             "question": user_query
         })
-        response_text = response.content.strip()
     except Exception as e:
-        response_text = f"Σφάλμα κατά την κλήση του API: {str(e)}"
+        print(f"⚠️ Σφάλμα κατά την εκτέλεση της αλυσίδας: {e}")
+        response_text = "⚠️ Σφάλμα κατά την επεξεργασία της ερώτησης. Παρακαλώ δοκιμάστε ξανά αργότερα."
 
     return response_text
