@@ -1,86 +1,93 @@
 import streamlit as st
-from dotenv import load_dotenv
+from pdf_generator import create_pdf
+from rag_assistant import ask_rag, load_models
 
-# Εισαγωγή συναρτήσεων από το rag_assistant.py
-from rag_assistant import load_models, ask_rag
+# Page Configuration
+st.set_page_config(page_title="Building Management App", layout="wide")
 
-# Φόρτωση μεταβλητών περιβάλλοντος (.env)
-load_dotenv()
+# 1. LOAD MODELS (Cached)
+@st.cache_resource
+def get_models():
+    return load_models()
 
-# --- ΡΥΘΜΙΣΗ ΣΕΛΙΔΑΣ STREAMLIT ---
-st.set_page_config(
-    page_title="Διαχείριση Πολυκατοικίας - Φιλικών 35",
-    page_icon="🏢",
-    layout="wide"
-)
+# Προσαρμογή: Unpacking των vectorstore & chat_llm
+vectorstore, chat_llm = get_models()
 
-# --- INITIALIZATION STATE ---
-if "history" not in st.session_state:
-    st.session_state.history = []
-
-if "models_loaded" not in st.session_state:
-    with st.spinner("📦 Φόρτωση μοντέλων και εγγράφων PDF..."):
-        st.session_state.vectorstore, st.session_state.llm = load_models()
-    st.session_state.models_loaded = True
-
-# --- SIDEBAR: ΣΤΟΙΧΕΙΑ & PDF GENERATOR ---
-with st.sidebar:
-    st.title("🏢 Φιλικών 35, Περιστέρι")
-    st.caption("Διαχειριστής: Σωτήρης Σοφικίτης")
-    st.divider()
-
-    st.subheader("📄 Έκδοση Κοινοχρήστων")
-    st.write("Συμπλήρωσε τα στοιχεία του μήνα για υπολογισμό.")
-
-    month_input = st.text_input("Μήνας / Έτος", value="Μάρτιος 2026")
-    hron_bill = st.number_input("Λογαριασμός ΗΡΩΝ (€)", min_value=0.0, value=120.0, step=5.0)
-    water_bill = st.number_input("Λογαριασμός Νερού (€) - [0 αν δεν υπάρχει]", min_value=0.0, value=0.0, step=5.0)
-
-    if st.button("🚀 Υπολογισμός Κοινοχρήστων", use_container_width=True):
-        tzina_hron = hron_bill * 0.2901
-        chara_hron = hron_bill * 0.2472
-        politis_hron = hron_bill * 0.4627
-
-        water_per_apt = water_bill / 3.0 if water_bill > 0 else 0.0
-
-        tzina_total = tzina_hron + 6.70 + 10.33 + water_per_apt
-        chara_total = chara_hron + 6.70 + 11.50 + water_per_apt
-        politis_total = politis_hron + 6.70 + 11.50 + water_per_apt
-
-        st.success("✅ Ο υπολογισμός ολοκληρώθηκε!")
-        st.markdown(f"""
-        **Ανακεφαλαίωση {month_input}:**
-        * **A1 (Τζίνα):** {tzina_total:.2f} €
-        * **B1 (Χαρά):** {chara_total:.2f} €
-        * **B2 (Πολίτης):** {politis_total:.2f} €
-        """)
-
-# --- ΚΥΡΙΩΣ ΜΕΡΟΣ: CHATBOT UI ---
-st.title("🤖 AI Βοηθός Διαχείρισης")
-st.caption("Ρώτα οτιδήποτε σχετικά με τον κανονισμό, τα ενοίκια ή τα κοινόχρηστα της πολυκατοικίας.")
-
-# Εμφάνιση Ιστορικού Chat
-for message in st.session_state.history:
-    role = message["role"]
-    content = message["content"]
-    with st.chat_message(role):
-        st.markdown(content)
-
-# Είσοδος νέας ερώτησης
-if user_query := st.chat_input("Γράψτε την ερώτησή σας εδώ..."):
-    # 1. Εμφάνιση ερώτησης χρήστη
-    st.chat_message("user").markdown(user_query)
-
-    # 2. Απάντηση από το RAG
-    with st.chat_message("assistant"):
-        with st.spinner("🔍 Αναζήτηση στα έγγραφα & παραγωγή απάντησης..."):
-            response = ask_rag(
-                user_query=user_query,
-                history=st.session_state.history,
-                llm=st.session_state.llm
+# 2. SESSION STATE FOR CHAT
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = [
+        {
+            "role": "system", 
+            "content": (
+                "Είσαι ένας χρήσιμος βοηθός διαχείρισης κτηρίου. "
+                "Απάντησε στην ερώτηση του χρήστη αποκλειστικά και μόνο με βάση τις πληροφορίες που σου δίνονται, στα Ελληνικά."
             )
-            st.markdown(response)
-            
-    # 3. Ενημέρωση ιστορικού
-    st.session_state.history.append({"role": "user", "content": user_query})
-    st.session_state.history.append({"role": "assistant", "content": response})
+        }
+    ]
+
+# --- UI LAYOUT ---
+st.title("🏢 Διαχείριση Κοινοχρήστων & RAG Assistant")
+
+col1, col2 = st.columns([1, 1])
+
+# ΑΡΙΣΤΕΡΗ ΣΤΗΛΗ: Υπολογισμός & Έκδοση PDF
+with col1:
+    st.header("📄 Έκδοση Κοινοχρήστων")
+    with st.form("data_form"):
+        period = st.text_input("Περίοδος", "16/02/26 - 15/03/26")
+        reuma = st.number_input("Σύνολο Ρεύματος (€)", min_value=0.0, format="%.2f")
+        nero = st.number_input("Σύνολο Νερού (€)", min_value=0.0, format="%.2f")
+        episkeves = st.number_input("Σύνολο Επισκευών (€)", min_value=0.0, format="%.2f")
+        
+        # Νέο πεδίο για την περιγραφή της βλάβης/επισκευής
+        repair_name = st.text_input(
+            "Περιγραφή Επισκευής (στα Λατινικά/Αγγλικά)", 
+            value="General",
+            help="π.χ. Plumbing, Roof Fix, Door Lock"
+        )
+        
+        submit_button = st.form_submit_button("Υπολογισμός")
+
+    if submit_button:
+        # Κλήση της create_pdf με την προσθήκη του repair_name
+        pdf_bytes = create_pdf(period, reuma, nero, episkeves, repair_name)
+        st.success("Το PDF δημιουργήθηκε επιτυχώς!")
+
+        st.download_button(
+            label="📥 Λήψη PDF",
+            data=bytes(pdf_bytes),
+            file_name=f"koinoxrista_{period.replace('/', '-')}.pdf",
+            mime="application/pdf"
+        )
+
+# ΔΕΞΙΑ ΣΤΗΛΗ: RAG Chatbot
+with col2:
+    st.header("🤖 Βοηθός RAG")
+    
+    # Προβολή Ιστορικού (αγνοώντας το system message)
+    for msg in st.session_state.chat_history:
+        if msg["role"] == "system":
+            continue
+        with st.chat_message(msg["role"]):
+            st.write(msg["content"])
+
+    # Chat Input
+    if user_input := st.chat_input("Ρωτήστε για τους κανόνες κοινοχρήστων..."):
+        # 1. Εμφάνιση & Αποθήκευση μηνύματος χρήστη
+        with st.chat_message("user"):
+            st.write(user_input)
+        st.session_state.chat_history.append({"role": "user", "content": user_input})
+        
+        # 2. Παραγωγή Απάντησης από το RAG
+        with st.chat_message("assistant"):
+            with st.spinner("Ανάλυση..."):
+                response = ask_rag(
+                    user_query=user_input,
+                    history=st.session_state.chat_history,
+                    vectorstore=vectorstore,
+                    chat_llm=chat_llm
+                )
+                st.write(response)
+        
+        # 3. Αποθήκευση απάντησης βοηθού στο ιστορικό
+        st.session_state.chat_history.append({"role": "assistant", "content": response})
