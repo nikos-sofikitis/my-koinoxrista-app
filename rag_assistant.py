@@ -25,7 +25,7 @@ def build_or_load_vectorstore():
     embeddings = HuggingFaceEmbeddings(
         model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     ) 
-    
+
     # 2. Check if FAISS index already exists
     if os.path.exists(FAISS_INDEX_PATH):
         print("Loading Existing FAISS index from disk...")
@@ -64,7 +64,7 @@ def build_or_load_vectorstore():
     # CREATE VECTOR STORE
     vectorstore = FAISS.from_documents(docs, embeddings)
     vectorstore.save_local(FAISS_INDEX_PATH)  # Save the FAISS index to disk
-    
+
     return vectorstore
 
 
@@ -78,7 +78,7 @@ def load_models():
         repo_id="Qwen/Qwen2.5-72B-Instruct",
         task="text-generation",
         max_new_tokens=512,
-        temperature=0.1,
+        temperature=0.2,
         huggingfacehub_api_token=hf_api_token
     )
 
@@ -98,27 +98,32 @@ def ask_rag(user_query, history, vectorstore, chat_llm, max_history_turns=3):
         except Exception as e:
             print(f"⚠️ Σφάλμα κατά την ανάκτηση εγγράφων: {e}")
             context = ""
-    
+
     if not context:
-        context = "Δεν υπάρχουν διαθέσιμα σχετικά έγγραφα."
+        context = "Δεν βρέθηκαν σχετικές πληροφορίες στα τοπικά έγγραφα της πολυκατοικίας."
 
     # History Management
     window_size = max_history_turns * 2
     recent_history = history[-window_size:] if history else []
-    
+
     chat_messages = []
     for msg in recent_history:
         if msg["role"] == "user":
             chat_messages.append(HumanMessage(content=msg["content"]))
         elif msg["role"] == "assistant":
             chat_messages.append(AIMessage(content=msg["content"]))
-    
-    # System Prompt
+
+    # --- HYBRID RAG SYSTEM PROMPT ---
     prompt = ChatPromptTemplate.from_messages([
         ("system", 
-         "Είσαι ένας εξειδικευμένος βοηθός διαχείρισης κτηρίου και κοινοχρήστων.\n"
-         "Απάντησε στην ερώτηση του χρήστη αποκλειστικά στα Ελληνικά, χρησιμοποιώντας τις πληροφορίες από τα έγγραφα.\n\n"
-         "--- ΠΛΗΡΟΦΟΡΙΕΣ ΑΠΟ PDFs ---\n{context}\n---------------------------"),
+         "Είσαι ένας εξειδικευμένος και έμπειρος βοηθός διαχείρισης κτηρίου, κοινοχρήστων και λογιστικών/πρακτικών θεμάτων πολυκατοικίας.\n"
+         "Απάντησε στην ερώτηση του χρήστη πάντα στα Ελληνικά, ακολουθώντας τους παρακάτω κανόνες:\n\n"
+         "1. ΕΑΝ η ερώτηση αφορά συγκεκριμένα στοιχεία της πολυκατοικίας (π.χ. συμβόλαια ενοίκων, ονόματα, συγκεκριμένες χρεώσεις/ποσά) και η απάντηση υπάρχει στα παρακάτω εγγραφα:\n"
+         "   - Απάντησε στηριζόμενος με ακρίβεια στα έγγραφα.\n\n"
+         "2. ΕΑΝ η ερώτηση αφορά γενικές λογιστικές/νομικές απορίες, επίλυση διαφωνιών μεταξύ ενοίκων, ή πρακτικές προτάσεις για προβλήματα πολυκατοικίας που ΔΕΝ υπάρχουν στα έγγραφα:\n"
+         "   - ΜΗΝ πεις ότι δεν γνωρίζεις.\n"
+         "   - Χρησιμοποίησε τη γενική σου γνώση για να δώσεις μια χρηστική, δομημένη και επαγγελματική συμβουλή ή λύση.\n\n"
+         "--- ΠΛΗΡΟΦΟΡΙΕΣ ΑΠΟ ΕΓΓΡΑΦΑ (CONTEXT) ---\n{context}\n-----------------------------------------"),
         MessagesPlaceholder(variable_name="history"),
         ("human", "{question}")
     ])
@@ -132,7 +137,7 @@ def ask_rag(user_query, history, vectorstore, chat_llm, max_history_turns=3):
             "question": user_query
         })
     except Exception as e:
-        print(f"⚠️ Σφάλμα κατά την εκτέλεση της αλυσίδας: {e}")
-        response_text = "⚠️ Σφάλμα κατά την επεξεργασία της ερώτησης. Παρακαλώ δοκιμάστε ξανά αργότερα."
+        print(f"\n❌ ΑΚΡΙΒΕΣ ΣΦΑΛΜΑ LLM: {repr(e)}\n")
+        response_text = f"⚠️ Σφάλμα LLM: {e}"
 
     return response_text
